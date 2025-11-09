@@ -1,0 +1,93 @@
+{
+  "flowId": "main-flow-v1.0",
+  "name": "Main Assistant Flow",
+  "startBlockId": "block_welcome",
+  "blocks": [
+    {
+      "id": "block_welcome",
+      "type": "MESSAGE",
+      "data": {
+        "text": "Hello, what are you looking for today?"
+      },
+      "nextBlockId": "block_detect_initial_intent"
+    },
+    {
+      "id": "block_detect_initial_intent",
+      "type": "INTENT_DETECTION",
+      "data": {
+        "intents": [
+          "What is the weather",
+          "What is the time"
+        ],
+        "mappings": {
+          "What is the weather": "block_weather_response",
+          "What is the time": "block_time_response"
+        },
+        "fallbackBlockId": "block_fallback_generic"
+      }
+    },
+    {
+      "id": "block_weather_response",
+      "type": "MESSAGE",
+      "data": {
+        "text": "It's sunny and 17 degrees."
+      },
+      "nextBlockId": "block_ask_anything_else"
+    },
+    {
+      "id": "block_time_response",
+      "type": "MESSAGE",
+      "data": {
+        "text": "The time is now 10:00PM."
+      },
+      "nextBlockId": "block_ask_anything_else"
+    },
+    {
+      "id": "block_ask_anything_else",
+      "type": "MESSAGE",
+      "data": {
+        "text": "Do you need anything else?"
+      },
+      "nextBlockId": "block_detect_continue_intent"
+    },
+    {
+      "id": "block_detect_continue_intent",
+      "type": "INTENT_DETECTION",
+      "data": {
+        "intents": [
+          "Yes",
+          "No"
+        ],
+        "mappings": {
+          "Yes": "block_offer_further_help",
+          "No": "block_goodbye"
+        },
+        "fallbackBlockId": "block_fallback_generic"
+      }
+    },
+    {
+      "id": "block_offer_further_help",
+      "type": "MESSAGE",
+      "data": {
+        "text": "Ok, let me know what else you need."
+      },
+      "nextBlockId": "block_detect_initial_intent"
+    },
+    {
+      "id": "block_goodbye",
+      "type": "MESSAGE",
+      "data": {
+        "text": "Thanks, bye!"
+      },
+      "nextBlockId": null
+    },
+    {
+      "id": "block_fallback_generic",
+      "type": "MESSAGE",
+      "data": {
+        "text": "I'm sorry, I didn't understand that. Could you please rephrase?"
+      },
+      "nextBlockId": "block_detect_initial_intent"
+    }
+  ]
+}
