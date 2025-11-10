@@ -6,8 +6,11 @@ import jakarta.inject.Inject;
 import jakarta.websocket.Session;
 import org.acme.domain.Block;
 import org.acme.domain.ChatbotFlow;
+import org.acme.service.gemini.GeminiService;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -17,6 +20,9 @@ public class ChatbotService {
 
     @Inject
     ConfigService configService; // Injecting the service to get the flow configuration
+
+    @Inject
+        GeminiService geminiService;
 
     // Thread-safe map to store the state of each user's conversation.
     // Key: WebSocket Session ID, Value: The ID of the block the user is currently at.
@@ -52,7 +58,6 @@ public class ChatbotService {
             return;
         }
 
-        // Find the block the user was waiting at.
         Optional<Block> currentBlockOpt = findBlockById(flow, currentBlockId);
         if (currentBlockOpt.isEmpty() || !"INTENT_DETECTION".equals(currentBlockOpt.get().type)) {
             sendMessage(session, "Error: I was not expecting a message right now.");
@@ -60,13 +65,18 @@ public class ChatbotService {
         }
 
         Block currentBlock = currentBlockOpt.get();
+        List<String> possibleIntents = getIntentsFromBlock(currentBlock);
 
-        // Simple text match.
-        String nextBlockId = findNextBlockIdForIntent(currentBlock, userMessage);
-
-        System.out.println("User '" + session.getId() + "' said '" + userMessage + "'. Matched intent. Moving to block: " + nextBlockId);
-        processBlock(session, nextBlockId);
+        // Call our Gemini service. This is now an asynchronous operation.
+        geminiService.determineIntent(userMessage, possibleIntents)
+                .subscribe().with(matchedIntent -> {
+                    // This code runs AFTER Gemini responds.
+                    System.out.println("User '" + session.getId() + "' said '" + userMessage + "'. Gemini detected intent: " + matchedIntent);
+                    String nextBlockId = mapIntentToBlockId(currentBlock, matchedIntent);
+                    processBlock(session, nextBlockId);
+                });
     }
+
 
     // This is the core logic engine. It processes a block and decides what to do next.
     private void processBlock(Session session, String blockId) {
@@ -111,20 +121,23 @@ public class ChatbotService {
         return flow.blocks.stream().filter(b -> b.id.equals(blockId)).findFirst();
     }
 
-    // TEMPORARY: Simple intent matching
-    private String findNextBlockIdForIntent(Block block, String userMessage) {
+    private List<String> getIntentsFromBlock(Block block) {
+        List<String> intents = new ArrayList<>();
         JsonNode intentsNode = block.data.get("intents");
         if (intentsNode != null && intentsNode.isArray()) {
-            // Correctly iterate over the elements of the JSON array
-            for (final JsonNode intentNode : intentsNode) {
-                String intentText = intentNode.asText();
-                if (userMessage.equalsIgnoreCase(intentText)) {
-                    // If we find a match, get the corresponding next block ID from the mappings.
-                    return block.data.get("mappings").get(intentText).asText();
-                }
+            for (JsonNode node : intentsNode) {
+                intents.add(node.asText());
             }
         }
-        // If no intent matches, return the fallback block ID.
+        return intents;
+    }
+
+    private String mapIntentToBlockId(Block block, String intent) {
+        JsonNode mappingNode = block.data.get("mappings").get(intent);
+        if (mappingNode != null) {
+            return mappingNode.asText();
+        }
+        // If the matched intent isn't in the mappings - using the fallback.
         return block.data.get("fallbackBlockId").asText();
     }
 
