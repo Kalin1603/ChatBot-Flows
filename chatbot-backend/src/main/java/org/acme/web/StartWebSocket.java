@@ -8,6 +8,7 @@ import jakarta.websocket.OnOpen;
 import jakarta.websocket.Session;
 import jakarta.websocket.server.ServerEndpoint;
 import org.acme.service.ChatbotService;
+import org.eclipse.microprofile.context.ManagedExecutor;
 
 @ServerEndpoint("/chatbot") // Defines the WebSocket URL
 @ApplicationScoped
@@ -16,22 +17,28 @@ public class StartWebSocket {
     @Inject
     ChatbotService chatbotService; // Inject our business logic service
 
+    @Inject
+    ManagedExecutor managedExecutor;
+
     @OnOpen
     public void onOpen(Session session) {
         // When a new user connects, delegate to the service
-        chatbotService.handleNewConnection(session);
+        managedExecutor.runAsync(() -> {
+            chatbotService.handleNewConnection(session);
+        });
     }
 
     @OnClose
     public void onClose(Session session) {
-        // When a user disconnects, delegate to the service
         chatbotService.handleConnectionClose(session);
     }
 
     @OnMessage
     public void onMessage(String message, Session session) {
         // When a message is received from a user, delegate to the service
-        chatbotService.handleUserMessage(session, message);
+        managedExecutor.runAsync(() -> {
+            chatbotService.handleUserMessage(session, message);
+        });
     }
 
     // An @OnError method to handle any communication errors

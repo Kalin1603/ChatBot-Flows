@@ -3,12 +3,14 @@ package org.acme.service;
 import com.fasterxml.jackson.databind.JsonNode;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.transaction.Transactional;
 import jakarta.websocket.Session;
 import org.acme.domain.Block;
 import org.acme.domain.ChatbotFlow;
+import org.acme.persistence.ConversationEntry;
 import org.acme.service.gemini.GeminiService;
 
-import java.io.IOException;
+import java.time.Duration; // <-- NEW IMPORT
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -19,69 +21,65 @@ import java.util.concurrent.ConcurrentHashMap;
 public class ChatbotService {
 
     @Inject
-    ConfigService configService; // Injecting the service to get the flow configuration
+    ConfigService configService;
 
     @Inject
-        GeminiService geminiService;
+    GeminiService geminiService;
 
-    // Thread-safe map to store the state of each user's conversation.
-    // Key: WebSocket Session ID, Value: The ID of the block the user is currently at.
     private final Map<String, String> userStates = new ConcurrentHashMap<>();
 
-    // Called when a new user connects.
+    @Transactional
     public void handleNewConnection(Session session) {
         ChatbotFlow flow = configService.getFlow();
         if (flow == null) {
-            sendMessage(session, "Chatbot not configured. Please upload a flow.");
+            sendMessage(session, "Chatbot not configured. Please upload a flow.", null);
             return;
         }
         System.out.println("New connection: " + session.getId() + ". Starting flow.");
-        // Start the conversation from the beginning of the flow.
         processBlock(session, flow.startBlockId);
     }
 
-    // Called when a user is disconnected.
     public void handleConnectionClose(Session session) {
-        // Clean up the user's state when they disconnect.
         userStates.remove(session.getId());
         System.out.println("Connection closed: " + session.getId());
     }
 
-    // Called when a message is received from a user.
+    @Transactional
     public void handleUserMessage(Session session, String userMessage) {
         ChatbotFlow flow = configService.getFlow();
         String currentBlockId = userStates.get(session.getId());
 
+        ConversationEntry userEntry = new ConversationEntry(session.getId(), "USER", userMessage, currentBlockId);
+        userEntry.persist();
+
         if (currentBlockId == null) {
-            sendMessage(session, "Error: No current state found for your session. Restarting.");
+            sendMessage(session, "Error: No current state found for your session. Restarting.", null);
             handleNewConnection(session);
             return;
         }
 
         Optional<Block> currentBlockOpt = findBlockById(flow, currentBlockId);
         if (currentBlockOpt.isEmpty() || !"INTENT_DETECTION".equals(currentBlockOpt.get().type)) {
-            sendMessage(session, "Error: I was not expecting a message right now.");
+            sendMessage(session, "Error: I was not expecting a message right now.", currentBlockId);
             return;
         }
 
         Block currentBlock = currentBlockOpt.get();
         List<String> possibleIntents = getIntentsFromBlock(currentBlock);
 
-        // Call our Gemini service. This is now an asynchronous operation.
-        geminiService.determineIntent(userMessage, possibleIntents)
-                .subscribe().with(matchedIntent -> {
-                    // This code runs AFTER Gemini responds.
-                    System.out.println("User '" + session.getId() + "' said '" + userMessage + "'. Gemini detected intent: " + matchedIntent);
-                    String nextBlockId = mapIntentToBlockId(currentBlock, matchedIntent);
-                    processBlock(session, nextBlockId);
-                });
+        // Call our Gemini service.
+        String matchedIntent = geminiService.determineIntent(userMessage, possibleIntents)
+                .await().atMost(Duration.ofSeconds(15)); // Block for up to 15 seconds.
+
+        System.out.println("User '" + session.getId() + "' said '" + userMessage + "'. Gemini detected intent: " + matchedIntent);
+        String nextBlockId = mapIntentToBlockId(currentBlock, matchedIntent);
+        processBlock(session, nextBlockId);
     }
 
-
     // This is the core logic engine. It processes a block and decides what to do next.
-    private void processBlock(Session session, String blockId) {
+    @Transactional
+    public void processBlock(Session session, String blockId) {
         if (blockId == null) {
-            // A null blockId signifies the end of a conversation path.
             System.out.println("Flow ended for session: " + session.getId());
             return;
         }
@@ -90,7 +88,7 @@ public class ChatbotService {
         Optional<Block> blockOpt = findBlockById(flow, blockId);
 
         if (blockOpt.isEmpty()) {
-            sendMessage(session, "Error: Flow is corrupted. Cannot find block with ID: " + blockId);
+            sendMessage(session, "Error: Flow is corrupted. Cannot find block with ID: " + blockId, blockId);
             return;
         }
 
@@ -98,19 +96,17 @@ public class ChatbotService {
         switch (block.type) {
             case "MESSAGE":
                 String message = block.data.get("text").asText();
-                sendMessage(session, message);
-                // Immediately process the next block in the sequence.
+                sendMessage(session, message, block.id);
                 processBlock(session, block.nextBlockId);
                 break;
 
             case "INTENT_DETECTION":
-                // Storing the user's state and waiting for their input.
                 userStates.put(session.getId(), block.id);
                 System.out.println("Waiting for user input at block '" + block.id + "' for session: " + session.getId());
                 break;
 
             default:
-                sendMessage(session, "Error: Unknown block type '" + block.type + "'.");
+                sendMessage(session, "Error: Unknown block type '" + block.type + "'.", block.id);
                 break;
         }
     }
@@ -137,16 +133,15 @@ public class ChatbotService {
         if (mappingNode != null) {
             return mappingNode.asText();
         }
-        // If the matched intent isn't in the mappings - using the fallback.
         return block.data.get("fallbackBlockId").asText();
     }
 
-    private void sendMessage(Session session, String text) {
+    private void sendMessage(Session session, String text, String currentBlockId) {
+        ConversationEntry botEntry = new ConversationEntry(session.getId(), "BOT", text, currentBlockId);
+        botEntry.persist();
         // Using getAsyncRemote() for non-blocking sends, which is required on an I/O thread.
         session.getAsyncRemote().sendText(text, result -> {
-            if (result.isOK()) {
-                System.out.println("Message sent successfully to " + session.getId());
-            } else {
+            if (!result.isOK()) {
                 System.err.println("Error sending message to " + session.getId() + ": " + result.getException());
             }
         });
