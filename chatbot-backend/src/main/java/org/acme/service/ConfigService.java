@@ -28,4 +28,11 @@ public class ConfigService {
     public ChatbotFlow getFlow() {
         return this.currentFlow.get();
     }
+
+    /**
+     * Clears the current flow. Intended for use in tests to ensure isolation.
+     */
+    public void clear() {
+        this.currentFlow.set(null);
+    }
 }

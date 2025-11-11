@@ -14,6 +14,12 @@ class ConfigServiceTest {
     @Inject
     ConfigService configService;
 
+    // Resetting the state before each test in this class
+    @BeforeEach
+    void setUp() {
+        configService.clear();
+    }
+
     // Simple ChatbotFlow object for testing
     private ChatbotFlow createTestFlow() {
         ChatbotFlow flow = new ChatbotFlow();
